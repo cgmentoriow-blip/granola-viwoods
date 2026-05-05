@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Granola Viwoods Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/pdfmake.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/vfs_fonts.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=EB+Garamond:wght@400;700&display=swap');
+        body { font-family: 'EB Garamond', serif; background-color: white; color: black; margin: 0; padding: 0; }
+        .e-ink-border { border: 4px solid black; }
+        button:active { background-color: black !important; color: white !important; }
+        input:focus, textarea:focus { outline: none; }
+        .hidden { display: none; }
+        /* Optimized for E-Ink: No animations, no shadows */
+        * { transition: none !important; animation: none !important; box-shadow: none !important; }
+    </style>
+</head>
+<body>
+
+    <!-- LOGIN / PASTE VIEW -->
+    <div id="view-login" class="flex flex-col items-center justify-center min-h-screen p-6">
+        <div class="e-ink-border p-8 max-w-xl w-full bg-white">
+            <h1 class="text-4xl font-bold mb-6 text-center uppercase tracking-widest border-b-4 border-black pb-4">Granola Sync</h1>
+            
+            <div class="mb-6">
+                <label class="block font-bold uppercase text-sm mb-2">Gemini API Key (Optional)</label>
+                <input id="api-key-input" type="password" class="e-ink-border w-full p-3 text-lg font-sans" placeholder="Enter key for AI features...">
+                <p class="text-sm mt-1">Required only for "Ask AI" and "Draft Email".</p>
+            </div>
+
+            <div class="mb-6">
+                <label class="block font-bold uppercase text-sm mb-2">Paste Granola Note</label>
+                <textarea id="paste-input" class="e-ink-border w-full p-4 min-h-[250px] text-xl font-sans" placeholder="Paste Markdown here..."></textarea>
+            </div>
+
+            <button onclick="handlePaste()" class="w-full bg-black text-white p-5 text-2xl font-bold uppercase active:bg-white active:text-black">
+                Format & Open
+            </button>
+        </div>
+    </div>
+
+    <!-- DETAIL VIEW -->
+    <div id="view-detail" class="hidden min-h-screen flex flex-col">
+        <header class="border-b-4 border-black p-4 flex justify-between items-center sticky top-0 bg-white z-10">
+            <button onclick="showLogin()" class="e-ink-border px-6 py-3 font-bold uppercase">Back</button>
+            <div class="flex gap-3">
+                <button onclick="handleViTransferPDF()" class="bg-black text-white px-6 py-3 font-bold uppercase flex items-center">
+                    <i data-lucide="send" class="w-5 h-5 mr-2"></i>
+                    <span id="btn-text">ViTransfer (PDF)</span>
+                </button>
+            </div>
+        </header>
+
+        <main class="p-6 max-w-4xl mx-auto w-full flex-1">
+            <h1 id="note-title" class="text-4xl font-bold mb-2">Meeting Title</h1>
+            <p id="note-date" class="text-lg uppercase tracking-widest border-b-2 border-black pb-4 mb-8">Date</p>
+
+            <div class="grid grid-cols-3 e-ink-border mb-8 overflow-hidden bg-black gap-[4px]">
+                <button onclick="switchTab('summary')" id="tab-summary" class="p-4 font-bold uppercase bg-white">Notes</button>
+                <button onclick="switchTab('email')" id="tab-email" class="p-4 font-bold uppercase bg-white">Email</button>
+                <button onclick="switchTab('chat')" id="tab-chat" class="p-4 font-bold uppercase bg-white">Ask AI</button>
+            </div>
+
+            <div id="content-area" class="pb-24">
+                <!-- Content injected here -->
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let currentNote = null;
+        let currentTab = 'summary';
+        let chatHistory = [];
+        let emailDraft = "";
+
+        // --- CORE ACTIONS ---
+
+        function handlePaste() {
+            const text = document.getElementById('paste-input').value;
+            if (!text.trim()) return;
+
+            const lines = text.split('\n');
+            const title = lines[0].replace('# ', '').substring(0, 60) || "New Meeting";
+            
+            currentNote = {
+                title: title,
+                summary: text,
+                created_at: new Date().toISOString()
+            };
+
+            document.getElementById('view-login').classList.add('hidden');
+            document.getElementById('view-detail').classList.remove('hidden');
+            
+            document.getElementById('note-title').innerText = currentNote.title;
+            document.getElementById('note-date').innerText = new Date(currentNote.created_at).toLocaleDateString();
+            
+            switchTab('summary');
+            lucide.createIcons();
+        }
+
+        function showLogin() {
+            document.getElementById('view-detail').classList.add('hidden');
+            document.getElementById('view-login').classList.remove('hidden');
+            currentNote = null;
+            emailDraft = "";
+            chatHistory = [];
+        }
+
+        function switchTab(tab) {
+            currentTab = tab;
+            const content = document.getElementById('content-area');
+            
+            // Update Tab UI
+            ['summary', 'email', 'chat'].forEach(t => {
+                const el = document.getElementById(`tab-${t}`);
+                if (t === tab) {
+                    el.classList.remove('bg-white', 'text-black');
+                    el.classList.add('bg-black', 'text-white');
+                } else {
+                    el.classList.remove('bg-black', 'text-white');
+                    el.classList.add('bg-white', 'text-black');
+                }
+            });
+
+            if (tab === 'summary') {
+                content.innerHTML = renderMarkdown(currentNote.summary);
+            } else if (tab === 'email') {
+                renderEmailTab();
+            } else if (tab === 'chat') {
+                renderChatTab();
+            }
+            lucide.createIcons();
+        }
+
+        // --- AI LOGIC ---
+
+        async function callGemini(prompt) {
+            const key = document.getElementById('api-key-input').value;
+            if (!key) return "Error: Please enter a Gemini API Key on the login screen to use AI features.";
+            
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`;
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        systemInstruction: { parts: [{ text: "You are a professional assistant. Be concise. Output plain text." }] }
+                    })
+                });
+                const data = await response.json();
+                return data.candidates[0].content.parts[0].text;
+            } catch (e) {
+                return "Error connecting to AI. Check your key and connection.";
+            }
+        }
+
+        async function renderEmailTab() {
+            const content = document.getElementById('content-area');
+            if (emailDraft) {
+                content.innerHTML = `
+                    <button onclick="copyEmail()" class="e-ink-border px-4 py-2 font-bold uppercase mb-6 flex items-center">
+                        <i data-lucide="copy" class="w-4 h-4 mr-2"></i> Copy to Clipboard
+                    </button>
+                    <div class="text-xl whitespace-pre-wrap leading-relaxed">${emailDraft}</div>
+                `;
+            } else {
+                content.innerHTML = `<p class="text-2xl font-bold">Generating email draft...</p>`;
+                emailDraft = await callGemini(`Draft a professional follow-up email for: ${currentNote.summary}`);
+                renderEmailTab();
+            }
+            lucide.createIcons();
+        }
+
+        function renderChatTab() {
+            const content = document.getElementById('content-area');
+            let historyHtml = chatHistory.map(m => `
+                <div class="p-4 e-ink-border mb-4 ${m.role === 'user' ? 'bg-white' : 'bg-black text-white'}">
+                    <p class="font-bold uppercase text-xs mb-1">${m.role === 'user' ? 'You' : 'Gemini'}</p>
+                    <p class="text-xl">${m.text}</p>
+                </div>
+            `).join('');
+
+            content.innerHTML = `
+                <div id="chat-container" class="space-y-4 mb-6">${historyHtml}</div>
+                <div class="flex gap-2 sticky bottom-6 bg-white pt-4">
+                    <input id="chat-input" class="e-ink-border flex-1 p-4 text-xl" placeholder="Ask a question...">
+                    <button onclick="sendChat()" class="bg-black text-white px-8 font-bold uppercase">Send</button>
+                </div>
+            `;
+            
+            document.getElementById('chat-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendChat();
+            });
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chat-input');
+            const text = input.value;
+            if (!text.trim()) return;
+
+            chatHistory.push({ role: 'user', text: text });
+            renderChatTab();
+            
+            const response = await callGemini(`Context: ${currentNote.summary}\n\nQuestion: ${text}`);
+            chatHistory.push({ role: 'model', text: response });
+            renderChatTab();
+        }
+
+        // --- EXPORT ---
+
+        function handleViTransferPDF() {
+            const btn = document.getElementById('btn-text');
+            btn.innerText = "Generating...";
+            
+            const docDefinition = {
+                content: [
+                    { text: currentNote.title, fontSize: 22, bold: true, margin: [0, 0, 0, 10] },
+                    { text: `Date: ${new Date(currentNote.created_at).toLocaleString()}`, fontSize: 10, margin: [0, 0, 0, 20] },
+                    { text: currentNote.summary, fontSize: 12, lineHeight: 1.4 }
+                ],
+                defaultStyle: { font: 'Roboto' }
+            };
+
+            pdfMake.createPdf(docDefinition).download(`${currentNote.title.replace(/\s+/g, '_')}.pdf`);
+            
+            setTimeout(() => {
+                btn.innerText = "ViTransfer (PDF)";
+                window.open('https://my.viwoods.com/vitransfer', '_blank');
+            }, 1500);
+        }
+
+        // --- HELPERS ---
+
+        function renderMarkdown(text) {
+            return text.split('\n').map(line => {
+                if (line.startsWith('## ')) return `<h2 class="text-2xl font-bold mt-8 mb-4 border-b-2 border-black">${line.replace('## ', '')}</h2>`;
+                if (line.startsWith('# ')) return `<h1 class="text-3xl font-bold mt-8 mb-4">${line.replace('# ', '')}</h1>`;
+                if (line.startsWith('- [ ] ')) return `<div class="flex items-center my-2 text-xl"><div class="w-6 h-6 border-2 border-black mr-3"></div>${line.replace('- [ ] ', '')}</div>`;
+                if (line.startsWith('- [x] ')) return `<div class="flex items-center my-2 text-xl"><div class="w-6 h-6 border-2 border-black mr-3 bg-black text-white flex items-center justify-center font-sans text-sm">X</div>${line.replace('- [x] ', '')}</div>`;
+                if (line.startsWith('- ')) return `<div class="flex items-start my-2 text-xl"><div class="w-2 h-2 bg-black mt-2.5 mr-3 shrink-0"></div>${line.replace('- ', '')}</div>`;
+                return `<p class="mb-4 text-xl leading-relaxed">${line}</p>`;
+            }).join('');
+        }
+
+        function copyEmail() {
+            const el = document.createElement('textarea');
+            el.value = emailDraft;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            alert("Copied!");
+        }
+
+        // Init
+        lucide.createIcons();
+    </script>
+</body>
+</html>
